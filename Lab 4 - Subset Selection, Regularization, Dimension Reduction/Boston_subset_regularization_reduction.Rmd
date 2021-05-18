@@ -1,0 +1,202 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+
+Boston Data Set
+================
+
+This dataset contains information collected by the U.S Census Service concerning housing in the area of Boston Mass. It was obtained from the StatLib archive (http://lib.stat.cmu.edu/datasets/boston), and has been used extensively throughout the literature to benchmark algorithms. The dataset is small in size with only 506 cases.
+
+The data was originally published by Harrison, D. and Rubinfeld, D.L. `Hedonic prices and the demand for clean air', J. Environ. Economics & Management, vol.5, 81-102, 1978.
+
+
+Possible target: CRIM or MEDV (redo the exercise using MEDV, comment it!)
+
+There are 14 attributes in each case of the dataset. They are:
+CRIM - per capita crime rate by town
+ZN - proportion of residential land zoned for lots over 214,000 sq.ft.
+INDUS - proportion of non-retail business acres per town.
+CHAS - Charles River dummy variable (1 if tract bounds river; 0 otherwise)
+NOX - nitric oxides concentration (parts per 10 million)
+RM - average number of rooms per dwelling
+AGE - proportion of owner-occupied units built prior to 1940
+DIS - weighted distances to five Boston employment centres
+RAD - index of accessibility to radial highways
+TAX - full-value property-tax rate per $10,000
+PTRATIO - pupil-teacher ratio by town
+B - 1000(Bk - 0.63)^2 where Bk is the proportion of blacks by town
+LSTAT - % lower status of the population
+MEDV - Median value of owner-occupied homes in $1000's
+
+```{r}
+library(MASS)
+data("Boston", package = "MASS")
+mod<-lm(crim~.,data=Boston)
+summary(mod)
+library(car)
+vif(mod)
+sqrt(vif(mod))>2
+```
+
+Best Subset regression
+------------------------
+We will now use the package `leaps` to evaluate all the best-subset models.
+```{r}
+library(leaps)
+regfit.full=regsubsets(crim~.,data=Boston, nvmax=13) ## default is 8
+reg.summary=summary(regfit.full)
+names(reg.summary)
+plot(reg.summary$cp,xlab="Number of Variables",ylab="Cp")
+which.min(reg.summary$cp)
+points(8,reg.summary$cp[8],pch=20,col="red")
+```
+There is a plot method for the `regsubsets`  object
+```{r}
+plot(regfit.full,scale="Cp")
+coef(regfit.full,2)
+```
+
+
+
+Forward Stepwise Selection
+--------------------------
+Here we use the `regsubsets` function but specify the `method="forward" option:
+```{r}
+regfit.fwd=regsubsets(crim~.,data=Boston,method="forward", nvmax=13)
+summary(regfit.fwd)
+plot(regfit.fwd,scale="Cp")
+```
+
+
+
+
+Model Selection Using a validation Set
+---------------------------------------
+Lets make a training and validation set, so that we can choose a good subset model.
+We will do it using a slightly different approach from what was done in the the book.
+```{r}
+dim(Boston)
+set.seed(6)
+train=sample(seq(506),253,replace=FALSE)
+train
+regfit.fwd=regsubsets(crim~.,data=Boston[train,],method="forward", nvmax=13)
+```
+Now we will make predictions on the observations not used for training. We know there are 14 models, so we set up some vectors to record the errors. We have to do a bit of work here, because there is no predict method for `regsubsets`.
+```{r}
+val.errors=rep(NA,13)
+x.test=model.matrix(crim~.,data=Boston[-train,])
+for(i in 1:13){
+  coefi=coef(regfit.fwd,id=i)
+  pred=x.test[,names(coefi)]%*%coefi
+  val.errors[i]=mean((Boston$crim[-train]-pred)^2)
+}
+plot(sqrt(val.errors),ylab="Root MSE",ylim=c(3,9),pch=19,type="b")
+points(sqrt(regfit.fwd$rss[-1]/253),col="blue",pch=19,type="b")
+legend("topright",legend=c("Training","Validation"),col=c("blue","black"),pch=19)
+```
+
+In this case (but depends on the seeds) training error seems larger that validation error, sometimes it happens
+
+We need a function in order to do predict for `regsubsets`
+```{r}
+predict.regsubsets=function(object,newdata,id,...){
+  form=as.formula(object$call[[2]])
+  mat=model.matrix(form,newdata)
+  coefi=coef(object,id=id)
+  mat[,names(coefi)]%*%coefi
+}
+```
+
+Model Selection by Cross-validation
+-----------------------------------
+We will do 10-fold cross-validation. Its really easy!
+```{r}
+set.seed(11)
+folds=sample(rep(1:10,length=nrow(Boston)))
+folds
+table(folds)
+cv.errors=matrix(NA,10,13)
+for(k in 1:10){
+  best.fit=regsubsets(crim~.,data=Boston[folds!=k,],nvmax=13,method="forward")
+  for(i in 1:13){
+    pred=predict(best.fit,Boston[folds==k,],id=i)
+    cv.errors[k,i]=mean((Boston$crim[folds==k]-pred)^2)
+  }
+}
+rmse.cv=sqrt(apply(cv.errors,2,mean))
+plot(rmse.cv,pch=19,type="b")
+```
+
+
+
+Ridge Regression and the Lasso
+-------------------------------
+We will use the package `glmnet`, which does not use the model formula language, so we will set up an `x` and `y`.
+```{r}
+library(glmnet)
+x=model.matrix(crim~.-1,data=Boston) 
+y=Boston$crim
+```
+First we will fit a ridge-regression model. This is achieved by calling `glmnet` with `alpha=0` (see the helpfile). There is also a `cv.glmnet` function which will do the cross-validation for us. 
+```{r}
+fit.ridge=glmnet(x,y,alpha=0)
+plot(fit.ridge,xvar="lambda",label=TRUE)
+cv.ridge=cv.glmnet(x,y,alpha=0)
+plot(cv.ridge)
+coef(cv.ridge)
+```
+Now we fit a lasso model; for this we use the default `alpha=1`
+```{r}
+fit.lasso=glmnet(x,y)
+plot(fit.lasso,xvar="lambda",label=TRUE)
+cv.lasso=cv.glmnet(x,y)
+plot(cv.lasso)
+coef(cv.lasso)
+```
+
+ Suppose we want to use our earlier train/validation division to select the `lambda` for the lasso.
+ This is easy to do.
+```{r}
+lasso.tr=glmnet(x[train,],y[train])
+lasso.tr
+pred=predict(lasso.tr,x[-train,])
+dim(pred)
+rmse= sqrt(apply((y[-train]-pred)^2,2,mean))
+plot(log(lasso.tr$lambda),rmse,type="b",xlab="Log(lambda)")
+lam.best=lasso.tr$lambda[order(rmse)[1]]
+lam.best
+coef(lasso.tr,s=lam.best)
+```
+
+Principal Component Regression and Partial Least Square Regression
+================ 
+
+
+```{r}
+library(pls)
+set.seed(2)
+pcr.fit=pcr(crim~.,data=Boston,scale=TRUE,validation="CV")
+summary(pcr.fit)
+validationplot(pcr.fit,val.type="MSEP",legendpos = "topright", main="PCR")
+set.seed(1)
+pcr.fit=pcr(crim~.,data=Boston, subset=train,scale=TRUE, validation="CV")
+validationplot(pcr.fit,val.type="MSEP",legendpos = "topright", main="PCR test")
+pcr.pred=predict(pcr.fit,x[-train,],ncomp=2)
+mean((pcr.pred-y[-train])^2)
+pcr.fit=pcr(y~x,scale=TRUE,ncomp=2)
+summary(pcr.fit)
+```
+```{r}
+set.seed(1)
+pls.fit=plsr(crim~.,data=Boston, subset=train, scale=TRUE, validation="CV")
+summary(pls.fit)
+validationplot(pls.fit,val.type="MSEP", legendpos = "topright", main="PLSR Test")
+pls.pred=predict(pls.fit,x[-train,],ncomp=2)
+mean((pls.pred-y[-train])^2)
+pls.fit=plsr(crim~.,data=Boston,scale=TRUE,ncomp=2)
+summary(pls.fit)
+
+
+```

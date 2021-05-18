@@ -1,0 +1,212 @@
+
+---
+title: "Subste Selectiona and Regularization"
+author: "Silvia Salini"
+date: "11/5/2021"
+output: html_document
+---
+
+Crime Data Set
+================
+
+2005 Statewide Crime dataset. Agresti and Finlay book ’Statistical Method for Social Sciences’. The variables for this data set are: 
+VI = violent crime rate (number of violent crimes per 100,000 population), 
+VI2 = violent crime rate (number of violent crimes per 10,000 population), 
+MU = murder rate, 
+ME = percent in metropolitan areas, 
+WH = percent white, 
+HS = percent high school graduates,
+PO = percent below the poverty level. 
+The data are from Statistical Abstract of the United States. The units are 51, the 50 states of United States plus the District of Columbia (or Washington D.C.).
+
+```{r}
+library(smss)
+data("crime2005")
+summary(crime2005[,-c(1,2)])
+library(car)
+Boxplot(crime2005[,-c(1,2)], main="Crime Data")
+```
+There are outliers, so before we proceed we will remove them:
+
+```{r}
+crime2005<-crime2005[which(crime2005$VI2<100),]
+summary(crime2005[,-c(1,2)])
+Boxplot(crime2005[,-c(1,2)], main="Crime Data excluding DC (id=51)")
+```
+
+
+Linear Regression
+================
+```{r}
+rownames(crime2005)<-crime2005$STATE
+dati<-crime2005[,-c(1,2)]
+mod<-lm(VI2~.,data=dati)
+summary(mod)
+library(car)
+vif(mod)
+sqrt(vif(mod))>1.5
+```
+
+
+Best Subset regression
+------------------------
+We will now use the package `leaps` to evaluate all the best-subset models.
+
+```{r}
+library(leaps)
+regfit.full=regsubsets(VI2~.,data=dati)
+reg.summary=summary(regfit.full)
+names(reg.summary)
+plot(reg.summary$cp,xlab="Number of Variables",ylab="Cp")
+which.min(reg.summary$cp)
+points(2,reg.summary$cp[2],pch=20,col="red")
+```
+
+There is a plot method for the `regsubsets`  object
+
+```{r}
+plot(regfit.full,scale="Cp")
+coef(regfit.full,2)
+```
+
+
+Forward Stepwise Selection
+--------------------------
+Here we use the `regsubsets` function but specify the `method="forward" option:
+```{r}
+regfit.fwd=regsubsets(VI2~.,data=dati,method="forward")
+summary(regfit.fwd)
+plot(regfit.fwd,scale="Cp")
+```
+
+
+
+
+Model Selection Using a Validation Set
+---------------------------------------
+Lets make a training and validation set, so that we can choose a good subset model.
+We will do it using a slightly different approach from what was done in the the book.
+```{r}
+dim(dati)
+set.seed(1)
+train=sample(seq(50),25,replace=FALSE)
+train
+regfit.fwd=regsubsets(VI2~.,data=dati[train,],method="forward")
+```
+Now we will make predictions on the observations not used for training. We know there are 5 models, so we set up some vectors to record the errors. We have to do a bit of work here, because there is no predict method for `regsubsets`.
+```{r}
+val.errors=rep(NA,5)
+x.test=model.matrix(VI2~.,data=dati[-train,])
+y.test=dati$VI2[-train]
+for(i in 1:5){
+  coefi=coef(regfit.fwd,id=i)
+  pred=x.test[,names(coefi)]%*%coefi
+  val.errors[i]=mean((dati$VI2[-train]-pred)^2)
+}
+plot(sqrt(val.errors),ylab="Root MSE",ylim=c(10,15),pch=19,type="b")
+points(sqrt(regfit.fwd$rss[-1]/25),col="blue",pch=19,type="b")
+legend("topright",legend=c("Training","Validation"),col=c("blue","black"),pch=19)
+```
+As we expect, the training error goes down monotonically as the model gets bigger, but not so for the validation error.
+
+We need a function in order to do predict for `regsubsets`
+```{r}
+predict.regsubsets=function(object,newdata,id,...){
+  form=as.formula(object$call[[2]])
+  mat=model.matrix(form,newdata)
+  coefi=coef(object,id=id)
+  mat[,names(coefi)]%*%coefi
+}
+``` 
+
+Model Selection by Cross-Validation
+-----------------------------------
+We will do 10-fold cross-validation. Its really easy!
+```{r}
+set.seed(11)
+folds=sample(rep(1:10,length=nrow(dati)))
+folds
+table(folds)
+cv.errors=matrix(NA,10,5)
+for(k in 1:10){
+  best.fit=regsubsets(VI2~.,data=dati[folds!=k,],method="forward")
+  for(i in 1:5){
+    pred=predict(best.fit,dati[folds==k,],id=i)
+    cv.errors[k,i]=mean( (dati$VI2[folds==k]-pred)^2)
+  }
+}
+rmse.cv=sqrt(apply(cv.errors,2,mean))
+plot(rmse.cv,pch=19,type="b")
+```
+
+
+
+Ridge Regression and the Lasso
+-------------------------------
+We will use the package `glmnet`, which does not use the model formula language, so we will set up an `x` and `y`.
+```{r}
+library(glmnet)
+x=model.matrix(VI2~.-1,data=dati) 
+y=dati$VI2
+```
+First we will fit a ridge-regression model. This is achieved by calling `glmnet` with `alpha=0` (see the helpfile). There is also a `cv.glmnet` function which will do the cross-validation for us. 
+```{r}
+fit.ridge=glmnet(x,y,alpha=0)
+plot(fit.ridge,xvar="lambda",label=TRUE)
+cv.ridge=cv.glmnet(x,y,alpha=0)
+plot(cv.ridge)
+coef(cv.ridge)
+```
+Now we fit a lasso model; for this we use the default `alpha=1`
+```{r}
+fit.lasso=glmnet(x,y)
+plot(fit.lasso,xvar="lambda",label=TRUE)
+cv.lasso=cv.glmnet(x,y)
+plot(cv.lasso)
+coef(cv.lasso)
+```
+
+ Suppose we want to use our earlier train/validation division to select the `lambda` for the lasso.
+ This is easy to do.
+```{r}
+lasso.tr=glmnet(x[train,],y[train])
+lasso.tr
+pred=predict(lasso.tr,x[-train,])
+dim(pred)
+rmse= sqrt(apply((y[-train]-pred)^2,2,mean))
+plot(log(lasso.tr$lambda),rmse,type="b",xlab="Log(lambda)")
+lam.best=lasso.tr$lambda[order(rmse)[1]]
+lam.best
+coef(lasso.tr,s=lam.best)
+```
+
+Principal Component Regression and Partial Least Square Regression
+================ 
+
+
+```{r}
+library(pls)
+set.seed(2)
+pcr.fit=pcr(VI2~.,data=dati,scale=TRUE,validation="CV")
+summary(pcr.fit)
+validationplot(pcr.fit,val.type="MSEP",legendpos = "topright", main="PCR")
+set.seed(1)
+pcr.fit=pcr(VI2~.,data=dati, subset=train,scale=TRUE, validation="CV")
+validationplot(pcr.fit,val.type="MSEP",legendpos = "topright", main="PCR test")
+pcr.pred=predict(pcr.fit,x[-train,],ncomp=2)
+mean((pcr.pred-y[-train])^2)
+pcr.fit=pcr(y~x,scale=TRUE,ncomp=2)
+summary(pcr.fit)
+```
+```{r}
+set.seed(1)
+pls.fit=plsr(VI2~.,data=dati, subset=train, scale=TRUE, validation="CV")
+summary(pls.fit)
+validationplot(pls.fit,val.type="MSEP", legendpos = "topright", main="PLSR Test")
+pls.pred=predict(pls.fit,x[-train,],ncomp=2)
+mean((pls.pred-y[-train])^2)
+pls.fit=plsr(VI2~.,data=dati,scale=TRUE,ncomp=2)
+summary(pls.fit)
+
+
+```

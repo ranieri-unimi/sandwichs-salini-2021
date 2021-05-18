@@ -1,0 +1,440 @@
+---
+title: "Lab 1: Linear Regression"
+author: "Silvia Salini"
+date: "4/24/2021"
+output: html_document
+---
+
+
+# Data
+The dataset **rents.sav** contains the following information for the 105 Italian provinces:
+
+- rent_pr: Average house rent prices (euro per squared meter), data from immobiliare.it (https://www.immobiliare.it/prezzi-mq/);
+- sell_pr: Average house selling prices (euro per squared meter), data from immobiliare.it (https://www.immobiliare.it/prezzi-mq/);
+- inhab: number of inhabitants of the province, source Istat;
+- income: per capita income, source Istat;
+- density: Population density of the province (num. of inhabitants per squared km); source Istat;
+- agepop: average age of the population; source Istat;
+- area: North, Center, South and Isles; source Istat;
+- Capital: the province is a regional capital (Yes=1,No=0);
+- transport: road and transport infrastructures in the province, relative to a national average of 100, source Istituto Tagliacarne;
+- education: Education and training facilities located in the province, relative to a national average of 100, source Istituto Tagliacarne
+
+# Outline
+1.	Describe the  variable rent_pr
+2.	Compute the correlation matrix between the variables rent_pr, sell_pr, transport, education, income; which variables are more correlated? 
+3.	Does rent_pr differ significantly for regional capital? 
+4.	Does rent_pr differ significantly for geographical area? 
+5.	Does the rental price per square meter depend linearly on per capita income? 
+6.	Does the model improve if the logarithm is used? (of price and/or income)
+7. Estimate a linear model to predict the rental price per square meter using all the relvant variable 
+8. Check all the diagnostics of the model
+
+
+
+# First of all, load the dataset
+
+```{r, message=FALSE, warning=FALSE}
+library(readxl)
+Dataset <- read_excel("rents.xlsx")
+str(Dataset)
+head(Dataset)
+```
+
+# 1.	Describe the  variable rent_pr
+
+**Check normality**
+
+```{r, message=FALSE, warning=FALSE}
+summary(Dataset$rent_pr)
+qqnorm(Dataset$rent_pr)
+shapiro.test(Dataset$rent_pr)
+```
+
+We can use use other plots:
+
+```{r, message=FALSE, warning=FALSE}
+library(ggpubr)
+ggqqplot(Dataset$rent_pr)
+ggdensity(Dataset, x = "rent_pr", fill = "lightgray", title = "rent_pr") +
+  stat_overlay_normal_density(color = "red", linetype = "dashed")
+```
+
+The variable rent_pr is not normal distributed, we reject the null hypotheris of the shapiro wilks test. 
+
+**Try using the logarithm**
+
+```{r, message=FALSE, warning=FALSE}
+Dataset$logrent=log(Dataset$rent_pr)
+qqnorm(Dataset$logrent)
+shapiro.test(Dataset$logrent)
+ggqqplot(Dataset$logrent)
+ggdensity(Dataset, x = "logrent", fill = "lightgray", title = "logrent") +
+  stat_overlay_normal_density(color = "red", linetype = "dashed")
+```
+ 
+ 
+ Seems that the logarithm improve. Eventualy a Box-Cox transformation could be selected. 
+ 
+# 2.	Compute the correlation matrix between the variables rent_pr, sell_pr, transport, education, income; which variables are more correlated? 
+
+```{r, message=FALSE, warning=FALSE}
+library(dplyr)
+mydata<-Dataset %>% select(rent_pr,inhab,agepop,transport,density,education,income)
+res<-cor(mydata) 
+round(res, 2)
+```
+
+**show the p-value**
+
+```{r, message=FALSE, warning=FALSE}
+symnum(res, abbr.colnames = FALSE)
+```
+
+```{r, message=FALSE, warning=FALSE}
+library("Hmisc")
+rcorr(as.matrix(mydata))
+```
+
+The variable most correlate with *rent_pr* is *income*. Also inhab, agepop, density have a significant correletion at 10%. 
+
+```{r, message=FALSE, warning=FALSE}
+# change format 
+# ++++++++++++++++++++++++++++
+# flattenCorrMatrix
+# ++++++++++++++++++++++++++++
+# cormat : matrix of the correlation coefficients
+# pmat : matrix of the correlation p-values
+flattenCorrMatrix <- function(cormat, pmat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut]
+  )
+}
+res1<-rcorr(as.matrix(mydata))
+flattenCorrMatrix(res1$r, res1$P)
+```
+
+**Scatter plot matrix** 
+
+```{r, message = FALSE, warning=FALSE}
+library(car)
+scatterplotMatrix(mydata, regLine = TRUE)
+```
+
+**Heatmap**
+```{r, message=FALSE, warning=FALSE}
+col<- colorRampPalette(c("blue", "white", "red"))(20)
+heatmap(x = res, col = col, symm = TRUE, Colv = NA, Rowv = NA)
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(corrplot)
+corrplot(res, type = "upper", 
+         tl.col = "black", tl.srt = 45)
+```
+
+```{r, message=FALSE, warning=FALSE}
+library("PerformanceAnalytics")
+chart.Correlation(mydata, histogram=TRUE, pch=19)
+```
+
+# 3.	Does rent_pr differ significantly for regional capital? 
+
+**Assign correct label to categories of the factor variable capital**
+
+```{r, message=FALSE, warning=FALSE}
+library(gplots)
+library(plyr)
+Dataset$capital <- factor(Dataset$capital,
+levels = c(1,0),
+labels = c("yes", "no"))
+boxplot(rent_pr~capital, data=Dataset)
+plotmeans(rent_pr~capital, data=Dataset)
+ddply(Dataset,~capital,summarise,mean=mean(rent_pr),sd=sd(rent_pr),n=length(rent_pr))
+t.test(rent_pr~capital, alternative='two.sided', conf.level=.95, var.equal=FALSE, data=Dataset)
+```
+The *rent_pr* doesn't differ for *capital*: the t statistics is 0.88, lower than 2, the confidence interval on the difference in means includes 0 and the p-value is larger than 0.05. 
+
+# 4.	Does rent_pr differ significantly for geographical area? 
+
+**Assign correct label to categories of the factor variable area** 
+```{r, message=FALSE, warning=FALSE}
+Dataset$area <- factor(Dataset$area,
+levels = c(1,2,3,4),
+labels = c("centre", "isles", "north","south"))
+```
+
+*Boxplot* -library(car) - insted of *boxplot* allow to print the identify the outlier with the row names. We assign the *provices* to the row names
+
+```{r, message=FALSE, warning=FALSE}
+library(car)
+rownames(Dataset)<-Dataset$province
+dd=Dataset[,-c(1,2,12)]
+rownames(dd)<-Dataset$province
+Boxplot(rent_pr~area, id=TRUE, data=Dataset)
+plotmeans(rent_pr ~ area, data=Dataset)
+ddply(Dataset,~area,summarise,mean=mean(rent_pr),sd=sd(rent_pr),n=length(rent_pr))
+summary(aov(rent_pr ~ area, data=Dataset))
+```
+
+The *rent_pr*  differs for *area*: the F statistics is 6,47, larget than the critical value, the p-value is lower than 0.05. Looking to the conffidence iterval plot, seems that that only south differs form north and center and north from south. 
+
+# 5.	Does the rental price per square meter depend linearly on per capita income? 
+```{r, message=FALSE, warning=FALSE}
+plot(rent_pr~income, col="darkgreen", pch=19, cex=1,data=Dataset)
+mod<-lm(rent_pr~income, data=Dataset)
+abline(mod, col="red", lwd=3)
+summary(mod)
+```
+The per capita *income* of a province affect positively the *rent_pr*. Knowing the *income* is possible t exaplin the 18% of the variance of *rent_pr*. 
+An increasing of 1 of *income* prodice and increasigf or 0.00037 of the average house rent prices (euro per squared meter). Make more senso tu comment of 100 or 1000 of icreasing of income, that produce 0.037 and 0.37 increase respecively. 
+
+
+# 6.	Does the model improve if the logarithm is used? (of price and/or income)
+
+Rememeber that *rent_pr* haven't normal distribution, *n=104* 
+
+We try with the 3 models:
+
+- linear-log
+- log-linear
+- log-log
+
+Rember that the interpretation of the slope parameter changes:
+
+- $\Delta$ 1 % in X, $\Delta \beta_1$ linear in Y
+- $\Delta$ 1 linear in X, $\Delta \beta_1$ % in Y 
+- $\Delta$ 1 % in X in X, $\Delta \beta_1$ % in Y 
+
+**linear-log**
+```{r, message=FALSE, warning=FALSE}
+mod1<-lm(rent_pr~log(income), data=Dataset)
+summary(mod1)
+```
+
+**log-linear**
+```{r, message=FALSE, warning=FALSE}
+mod2<-lm(log(rent_pr)~income, data=Dataset)
+summary(mod2)
+```
+**log-log**
+```{r, message=FALSE, warning=FALSE}
+mod3<-lm(log(rent_pr)~log(income), data=Dataset)
+summary(mod3)
+```
+
+Le log-linear model in the preferable in this case, the $R^2$ is 0.23, muche beter that for the linear model that was 18%
+
+# 7. Estimate a linear model to predict the rental price per square meter using all the relvant variable 
+
+**full model**
+We includes all the possible covariates and factors in the model. We do not consider the *sell_pr* (it is, as well ad *rent_pr*, an outcome variable).
+R creates automatically dummies variable for factor 
+
+```{r, message=FALSE, warning=FALSE}
+full.model <- lm(log(rent_pr) ~., data = dd)
+summary(full.model)
+```
+
+Check multicollinarity, using Variance Inflaction Factor
+```{r, message=FALSE, warning=FALSE}
+vif(full.model) # variance inflation factors 
+sqrt(vif(full.model)) > 2 # problem?
+```
+
+**Stepwise regression model**
+We apply the steptwise approach, other more advced method to select the subset of features will be presented during the course (best subset selection shrinkage methods).
+
+```{r, message=FALSE, warning=FALSE}
+library(MASS)
+step.model <- stepAIC(full.model, direction = "both", 
+                      trace = FALSE, k=3)
+summary(step.model)
+par(mfrow=c(2,2))
+plot(step.model)
+```
+
+In the final model, *income, density* and *area* are icnlided. Note that three dummies are included, the exclude ione is the reference category (baseline) *centre*. We must inclule all the other in order to know which is the baseline. As showed before (Anova), rent_pr differs in south and nord with respect to center. 
+
+# 8.	Check all the diagnostics of the model!
+
+**Collinarity**
+```{r, message=FALSE, warning=FALSE}
+vif(step.model) # variance inflation factors 
+sqrt(vif(step.model)) > 2 # problem?
+```
+
+
+**Standardized and Studentized Residual Distribution**
+```{r, message=FALSE, warning=FALSE}
+summary(step.model$residuals)
+shapiro.test(step.model$residuals)
+ggqqplot(step.model$residuals)
+dd$fit<-step.model$fitted.values
+dd$res<-step.model$residuals
+ggdensity(dd, x = "res", fill = "lightgray", title = "Residuals") +
+  stat_overlay_normal_density(color = "red", linetype = "dashed")
+```
+
+Studentized deleted residuals (or externally studentized residuals) is the deleted residual divided by its estimated standard deviation. Studentized residuals are going to be more effective for detecting outlying Y observations than standardized residuals. If an observation has an externally studentized residual that is larger than 3 (in absolute value) we can call it an outlier.
+
+```{r, message=FALSE, warning=FALSE}
+library(olsrr) 
+ols_plot_resid_stud(step.model)
+ols_plot_resid_stand(step.model)
+```
+
+Deleted Studentized Residual vs Fitted Values Plot for detecting outliers.
+
+```{r, message=FALSE, warning=FALSE}
+ols_plot_resid_stud_fit(step.model)
+```
+
+Studentized Residuals vs Leverage Plot for detecting influential observations.
+
+```{r, message=FALSE, warning=FALSE}
+ols_plot_resid_lev(step.model)
+```
+
+**Cook Distance**
+Cook’s distance was introduced by American statistician R Dennis Cook in 1977. It is used to identify influential data points. It depends on both the residual and leverage i.e it takes it account both the x value and y value of the observation.
+
+Steps to compute Cook’s distance:
+
+- delete observations one at a time.
+- refit the regression model on remaining $(n−1)$ observations
+- examine how much all of the fitted values change when the ith observation is deleted.
+
+A data point having a large cook’s d indicates that the data point strongly influences the fitted values.
+
+```{r, message=FALSE, warning=FALSE}
+par(mfrow=c(1,2))
+plot(step.model,4)
+plot(step.model,5)
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(olsrr) 
+ols_plot_cooksd_bar(step.model)
+ols_plot_cooksd_chart(step.model)
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(broom)
+theme_set(theme_classic())
+model.diag.metrics <- augment(step.model)
+head(model.diag.metrics)
+model.diag.metrics %>%
+  top_n(5, wt = .cooksd)
+```
+
+**DIFFBETAs**
+DFBETA measures the difference in each parameter estimate with and without the influential point. There is a DFBETA for each data point i.e if there are n observations and k variables, there will be $n x k$ DFBETAs. In general, large values of DFBETAS indicate observations that are influential in estimating a given parameter. Belsley, Kuh, and Welsch recommend 2 as a general cutoff value to indicate influential observations and $2/\sqrt(n)$ as a size-adjusted cutoff.
+
+```{r, message=FALSE, warning=FALSE}
+ols_plot_dfbetas(step.model)
+```
+
+**DIFFITS**
+Proposed by Welsch and Kuh (1977). It is the scaled difference between the $i^th$ 
+fitted value obtained from the full data and the $i^th$fitted value obtained by deleting the $i^th$
+observation. DFFIT - difference in fits, is used to identify influential data points. It quantifies the number of standard deviations that the fitted value changes when the ith data point is omitted.
+
+Steps to compute DFFITs:
+
+- delete observations one at a time.
+- refit the regression model on remaining observations
+- examine how much all of the fitted values change when the ith observation is deleted.
+
+An observation is deemed influential if the absolute value of its DFFITS value is greater than:
+
+$2∗(p+1)/√(n−p−1)$
+
+where $n$ is the number of observations and $p$ is the number of predictors including intercept.
+
+```{r, message=FALSE, warning=FALSE}
+ols_plot_dffits(step.model)
+```
+
+**Robust Regression Estimators**
+
+
+Robust regression is an alternative to least squares regression when data are contaminated with outliers or influential observations, and it can also be used for the purpose of detecting influential observations.
+
+Robust regression can be used in any situation in which you would use least squares regression. When fitting a least squares regression, we might find some outliers or high leverage data points. We have decided that these data points are not data entry errors, neither they are from a different population than most of our data. So we have no compelling reason to exclude them from the analysis. Robust regression might be a good strategy since it is a compromise between excluding these points entirely from the analysis and including all the data points and treating all them equally in OLS regression. The idea of robust regression is to weigh the observations differently based on how well behaved these observations are. Roughly speaking, it is a form of weighted and reweighted least squares regression.
+
+The **rlm** command in the **MASS** package command implements several versions of robust regression. In this example, we will show M-estimation with Huber and bisquare weighting. These two are very standard. M-estimation defines a weight function such that the estimating equation becomes 
+$\sum_{i=1}^{n}w_{i}(y_{i} – x’b)x’_{i} = 0$. But the weights depend on the residuals and the residuals on the weights. The equation is solved using Iteratively Reweighted Least Squares (IRLS). For example, the coefficient matrix at iteration j is $B_{j} = [X’W_{j-1}X]^{-1}X’W_{j-1}Y$  where the subscripts indicate the matrix at a particular iteration (not rows or columns). The process continues until it converges. In Huber weighting, observations with small residuals get a weight of 1 and the larger the residual, the smaller the weight. This is defined by the weight function 
+
+\begin{equation}
+w(e) =
+\left\{
+\begin{array}{rl}
+1 \quad \mbox{for} \quad |e| \leq k \\ \dfrac{k}{|e|} \quad \mbox{for} \quad |e| > k \\
+\end{array}
+\right.
+\end{equation}
+
+With bisquare weighting, all cases with a non-zero residual get down-weighted at least a little.
+
+```{r, message=FALSE, warning=FALSE}
+summary(step.model)
+rob.model<- rlm(log(rent_pr) ~ density+income+area, data = dd)
+summary(rob.model)
+```
+
+```{r, message=FALSE, warning=FALSE}
+hweights <- data.frame(prov = Dataset$province, resid = rob.model$resid, weight = rob.model$w)
+hweights2 <- hweights[order(rob.model$w), ]
+hweights2[1:25, ]
+hweights2[94:104, ]
+```
+
+We can see that roughly, as the absolute residual goes down, the weight goes up. In other words, cases with a large residuals tend to be down-weighted. All observations not shown above have a weight of 1. In OLS regression, all cases have a weight of 1. Hence, the more cases in the robust regression that have a weight close to one, the closer the results of the OLS and robust regressions.
+
+There are other estimation options available in rlm and other R commands and packages:, for example, Least trimmed squares using ltsReg in the robustbase package and MM using rlm.
+
+*Note*: Robust regression does not address issues of heterogeneity of variance.
+
+
+**Heteroskedastisity**  occurs when the variance for all observations in a data set are not the same. Conversely, when the variance for all observations are equal, we call that homoskedasticity. Why should we care about heteroskedasticity? Because it is a violation of the ordinary least square assumption that $var(y_i)=var(e_i)=σ2$. In the presence of heteroskedasticity, there are two main consequences on the least squares estimators:
+
+- The least squares estimator is still a linear and unbiased estimator, but it is no longer best. That is, there is another estimator with a smaller variance.
+- The standard errors computed for the least squares estimators are incorrect. This can affect confidence intervals and hypothesis testing that use those standard errors, which could lead to misleading conclusions.
+
+
+```{r, message=FALSE, warning=FALSE}
+par(mfrow=c(2,2))
+plot(step.model,1)
+plot(step.model,5)
+plot(dd$income,dd$res)
+plot(dd$density,dd$res)
+```
+
+```{r, message=FALSE, warning=FALSE}
+# Evaluate homoscedasticity
+# non-constant error variance test
+ncvTest(step.model)
+# plot studentized residuals vs. fitted values 
+spreadLevelPlot(step.model)
+```
+
+When we reject the null hypothesis in the previous tests, so we conclude that heteroskedasticity is present, we can use the *sandwich* package that implement robust standard erros. In this case, p-value are larger that 0.05, so the homoskedasticity hipothesis is accepted, the t-stat obtained with the robust standard erros (coefficinets don't chage) are similar as before, so we have the same conlcusions. 
+
+
+```{r, message=FALSE, warning=FALSE}
+library(lmtest)
+library(sandwich)
+bptest(step.model)
+coeftest(step.model, vcov = vcovHC(step.model, "HC1"))  
+```
+
+
+
+
+
